@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Page Extractor</title>
+    <link rel="stylesheet" href="sidepanel.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">Page Extractor</div>
+      <nav class="tabs" role="tablist">
+        <button class="tab" data-tab="page" role="tab">This page</button>
+        <button class="tab" data-tab="profiles" role="tab">Profiles</button>
+        <button class="tab" data-tab="data" role="tab">Data</button>
+        <button class="tab" data-tab="settings" role="tab">Settings</button>
+      </nav>
+    </header>
+    <main id="view" class="view"></main>
+    <div id="toast" class="toast" hidden></div>
+    <script src="sidepanel.js"></script>
+  </body>
+</html>
