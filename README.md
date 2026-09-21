@@ -70,6 +70,25 @@ Nothing is scanned until step 3 is done. The **Settings** tab shows a running sp
 - Banking, healthcare, mail, and authentication URLs are skipped by heuristic, as are pages the service worker observes being served with `Cache-Control: no-store` (this needs host permission for the site). An explicit per-site **Always** override bypasses the host heuristic for that origin.
 - Data lives in IndexedDB. The **Data** tab exports JSON/CSV and has **Clear site** / **Clear all**.
 
+## Debugging a page that produced nothing
+
+Every scan records a trace, so the extension can explain itself instead of failing silently.
+
+Open the side panel and press **Diagnose** on the **This page** tab (or **Explain why** in the empty-state card, or **Generate report** under *Diagnostics* in **Settings**). You get a ranked verdict in the panel and a single markdown report you can copy or download:
+
+- **Verdict** — ranked guesses at what stopped the pipeline, most specific first.
+- **Setup** — key present and verified, onboarding state, Jev endpoint, granted host permissions.
+- **Profiles considered** — every profile with its patterns, whether the URL matched, the per-site override, the page-gate probability, and a plain-language reason it did or did not run.
+- **Extraction** — per-source counts: produced, skipped as hidden or inside nav/footer, skipped as too short, deduped, kept.
+- **Jev calls** — one section per request with the model that answered, question and answer counts, cost, **the exact question sent and the raw answer received**, and the error body when a call failed.
+- **Candidates and decisions** — each candidate with its accept probability and whether it was accepted, sent to review, or discarded.
+- **Resolvers**, **storage**, **errors**, and a timestamped event log.
+- **Page source** — the HTML as the extractors saw it. Inline script and style bodies are replaced with placeholders (JSON-LD is kept verbatim, since the structured-data extractor reads it), which keeps the report small and reduces the chance of pasting a token. Tick *Keep script and style bodies* for the unfiltered version.
+
+Anything matching an API-key pattern is stripped before the report is rendered. The report still contains the page's URL and visible content, so read it before sharing.
+
+The report is designed to answer the common failures on its own: no profile matched the URL, a per-site **Never** override, a page gate that rejected the page, extractors finding nothing because the content is rendered late, every candidate scoring below the review threshold, an auth or rate-limit error from OpenRouter, a stale content script in a tab that was not reloaded, and a System One response shape that differs from what this build expects. That last one is why the raw answer is included verbatim.
+
 ## Assumptions to verify before shipping
 
 The spec notes that the System One request/response shape should be checked against OpenRouter's current reference. The client sends `{ model, state, questions }` and reads `answers[questionId]`. `normalizeAnswer` in `src/shared/jev.ts` accepts `{ value, probability }` as documented, plus `{ answer, confidence }`, a `probabilities` distribution, and a bare probability, so a small shape drift degrades gracefully rather than failing. `usage.cost` and the `model` field from each response feed the spend meter and match records.

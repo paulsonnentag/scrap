@@ -222,3 +222,14 @@ export interface ScanSummary {
   skipped?: string;
   error?: string;
 }
+
+/** Per-source extraction statistics, recorded by the content script for debug reports. */
+export interface CollectionStats {
+  source: CandidateSource;
+  note?: string;
+  produced: number;
+  skippedHidden: number;
+  skippedShort: number;
+  deduped: number;
+  kept: number;
+}

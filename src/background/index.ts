@@ -2,6 +2,8 @@ import type { ActiveProfilesMsg, ContentToBackground, PanelToBackground } from "
 import { broadcast, sendToTab } from "../shared/messages";
 import type { CompiledProfile, SiteOverrideMode } from "../shared/types";
 import { compileProfile } from "./compiler";
+import { buildDebugReport } from "./debugReport";
+import { clearDebugState, logEvent } from "./debugLog";
 import { verifyKey } from "./openrouter";
 import { clearAllOrigins, clearOrigin, deleteProfile, docSizes, getProfile, listProfiles, readOriginDoc, saveProfile, setMatchStatus, updateProfile } from "./repo";
 import { handleCandidates, originOf, resolveActiveProfiles, tabs } from "./scan";
@@ -77,7 +79,7 @@ chrome.runtime.onMessage.addListener((msg: ContentToBackground | PanelToBackgrou
   handle(msg, sender)
     .then((result) => sendResponse(result))
     .catch((err: Error) => {
-      console.error("[page-extractor] message failed", msg.type, err);
+      logEvent("error", `message/${msg.type}`, err.message, err.stack);
       sendResponse({ type: "ERROR", error: err.message });
     });
   return true; // async response
@@ -199,6 +201,11 @@ async function handle(msg: ContentToBackground | PanelToBackground, sender: chro
     }
 
     // --- Side panel: data -----------------------------------------------------
+    case "GET_DEBUG":
+      return { report: await buildDebugReport(msg) };
+    case "CLEAR_DEBUG":
+      await clearDebugState();
+      return { ok: true };
     case "GET_DATA_INDEX":
       return { sizes: await docSizes() };
     case "GET_ORIGIN_DOC":

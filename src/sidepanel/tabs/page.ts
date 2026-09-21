@@ -2,6 +2,7 @@ import { sendToBackground } from "../../shared/messages";
 import { truthProbability } from "../../shared/jev";
 import type { CompiledProfile, GeocodeResult, Match } from "../../shared/types";
 import { notify, refreshPage, state } from "../state";
+import { requestDiagnosis } from "./debug";
 import { h, pct, toast } from "../ui";
 
 function profileFor(id: string): CompiledProfile | undefined {
@@ -119,7 +120,12 @@ export function renderPageTab(root: HTMLElement): void {
       "div",
       { class: "row between" },
       h("div", { class: "small muted mono", style: "overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:70%" }, state.url || "(no page)"),
-      h("button", { class: "sm", on: { click: (e) => void rescan(e.currentTarget as HTMLButtonElement) } }, "Rescan"),
+      h(
+        "div",
+        { class: "row" },
+        h("button", { class: "sm", title: "Build a pasteable report explaining what this scan did", on: { click: () => requestDiagnosis() } }, "Diagnose"),
+        h("button", { class: "sm", on: { click: (e) => void rescan(e.currentTarget as HTMLButtonElement) } }, "Rescan"),
+      ),
     ),
   );
 
@@ -149,6 +155,15 @@ export function renderPageTab(root: HTMLElement): void {
   const visible = state.matches.filter((m) => effectiveStatus(m) !== "discard");
   if (!visible.length) {
     if (!s?.skipped && !s?.error) root.append(h("p", { class: "muted" }, "No matches on this page yet."));
+    root.append(
+      h(
+        "div",
+        { class: "card" },
+        h("p", { class: "small" }, "Nothing to show for this page."),
+        h("p", { class: "small muted" }, "Generate a debug report to see which profiles were considered, what the extractors found, and what Jev answered."),
+        h("button", { class: "primary sm", on: { click: () => requestDiagnosis() } }, "Explain why"),
+      ),
+    );
     return;
   }
 

@@ -1,5 +1,8 @@
 import type { JevRequest, JevResponse } from "../shared/jev";
+import { normalizeAnswer } from "../shared/jev";
+import type { JevCallTrace } from "../shared/debug";
 import type { KeyStatus } from "../shared/types";
+import { logEvent, recordJevCall } from "./debugLog";
 import { getApiKey, getSettings, recordSpend } from "./storage";
 
 export const OPENROUTER_BASE = "https://openrouter.ai/api";
@@ -131,16 +134,65 @@ export async function chatCompletion(messages: ChatMessage[], model: string, pur
 export async function systemOne(request: JevRequest, purpose = "judge"): Promise<JevResponse> {
   const ep = await systemOneEndpoint();
   const model = ep.stripModelPrefix && request.model.startsWith(ep.stripModelPrefix) ? request.model.slice(ep.stripModelPrefix.length) : request.model;
-  const res = await fetchWithRetry(`${ep.baseUrl}/v1/systemone`, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${ep.key}`, "Content-Type": "application/json", ...APP_HEADERS },
-    body: JSON.stringify({ ...request, model }),
-  });
-  const text = await res.text();
-  if (!res.ok) throw new ApiError(`System One request failed: HTTP ${res.status}`, res.status, text);
-  const json = JSON.parse(text) as JevResponse;
-  const tokens = json.usage?.total_tokens ?? json.usage?.input_tokens;
-  await recordSpend(purpose, json.usage?.cost, tokens);
-  console.debug("[page-extractor] jev", { id: json.id, model: json.model, provider: json.provider, cost: json.usage?.cost, tokens });
-  return json;
+  const body = JSON.stringify({ ...request, model });
+  const questionIds = Object.keys(request.questions);
+  const sampleId = questionIds[0];
+  const trace: JevCallTrace = {
+    purpose,
+    pageUrl: request.state.page.url,
+    at: new Date().toISOString(),
+    durationMs: 0,
+    requestModel: model,
+    candidates: request.state.candidates.length,
+    questions: questionIds.length,
+    stateChars: JSON.stringify(request.state).length,
+    ok: false,
+    answersReturned: 0,
+    answersUnmatched: 0,
+    answersUnparsed: 0,
+    sampleQuestion: sampleId ? { id: sampleId, ...request.questions[sampleId] } : undefined,
+  };
+  const started = Date.now();
+  try {
+    const res = await fetchWithRetry(`${ep.baseUrl}/v1/systemone`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${ep.key}`, "Content-Type": "application/json", ...APP_HEADERS },
+      body,
+    });
+    const text = await res.text();
+    trace.durationMs = Date.now() - started;
+    trace.httpStatus = res.status;
+    if (!res.ok) {
+      trace.errorSnippet = text.slice(0, 2000);
+      recordJevCall(trace);
+      throw new ApiError(`System One request failed: HTTP ${res.status}`, res.status, text);
+    }
+    const json = JSON.parse(text) as JevResponse;
+    const answers = json.answers ?? {};
+    const keys = Object.keys(answers);
+    trace.ok = true;
+    trace.responseModel = json.model;
+    trace.provider = json.provider;
+    trace.answersReturned = keys.length;
+    trace.answersUnmatched = keys.filter((k) => !request.questions[k]).length;
+    trace.answersUnparsed = keys.filter((k) => request.questions[k] && normalizeAnswer(answers[k], request.questions[k]) === null).length;
+    trace.cost = json.usage?.cost;
+    trace.tokens = json.usage?.total_tokens ?? json.usage?.input_tokens;
+    if (sampleId && sampleId in answers) trace.sampleRawAnswer = answers[sampleId];
+    else if (keys.length) trace.sampleRawAnswer = { [keys[0]]: answers[keys[0]] };
+    trace.rawResponseSnippet = text.slice(0, 2000);
+    recordJevCall(trace);
+    const tokens = trace.tokens;
+    await recordSpend(purpose, json.usage?.cost, tokens);
+    logEvent("info", `jev/${purpose}`, `${keys.length} answers for ${questionIds.length} questions`, { id: json.id, model: json.model, provider: json.provider, cost: json.usage?.cost, tokens, unparsed: trace.answersUnparsed });
+    return json;
+  } catch (err) {
+    if (!trace.durationMs) trace.durationMs = Date.now() - started;
+    if (!trace.httpStatus && !trace.errorSnippet) {
+      trace.errorSnippet = (err as Error).message;
+      recordJevCall(trace);
+    }
+    logEvent("error", `jev/${purpose}`, (err as Error).message);
+    throw err;
+  }
 }

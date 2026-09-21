@@ -1,5 +1,6 @@
 import type {
   Candidate,
+  CollectionStats,
   CompiledProfile,
   KeyStatus,
   Match,
@@ -23,6 +24,9 @@ export interface CandidatesMsg {
   title: string;
   lang: string;
   candidates: Candidate[];
+  /** Per-source extraction statistics, for debug reports. */
+  stats?: CollectionStats[];
+  trigger?: "page-load" | "rescan" | "test";
 }
 
 /** Background → Content */
@@ -45,6 +49,39 @@ export interface RescanContentMsg {
   type: "RESCAN_CONTENT";
   /** When present, only these profiles are run (used by TEST_PROFILE). */
   profiles?: CompiledProfile[];
+}
+export interface CollectPageSourceMsg {
+  type: "COLLECT_PAGE_SOURCE";
+  maxChars: number;
+  /** true keeps script/style bodies verbatim instead of replacing them with placeholders. */
+  raw: boolean;
+}
+
+/** Content → Background/panel reply to COLLECT_PAGE_SOURCE. */
+export interface PageSourceReply {
+  type: "PAGE_SOURCE";
+  buildId: string;
+  url: string;
+  title: string;
+  lang: string;
+  readyState: string;
+  frameCount: number;
+  bytesOriginal: number;
+  bytesIncluded: number;
+  truncated: boolean;
+  filtered: boolean;
+  html: string;
+  /** What the content script did on its last scan of this page. */
+  lastScan?: {
+    at: string;
+    profilesReceived: number;
+    profileNames: string[];
+    candidates: number;
+    stats: CollectionStats[];
+    highlighted: number;
+    skipped?: string;
+    error?: string;
+  };
 }
 
 /** Side panel → Background */
@@ -111,6 +148,17 @@ export interface SetSettingsMsg {
 export interface GetSpendMsg {
   type: "GET_SPEND";
 }
+export interface GetDebugMsg {
+  type: "GET_DEBUG";
+  tabId: number;
+  includeSource: boolean;
+  /** Keep script/style bodies verbatim in the captured source. */
+  raw: boolean;
+  maxSourceChars: number;
+}
+export interface ClearDebugMsg {
+  type: "CLEAR_DEBUG";
+}
 export interface GetDataIndexMsg {
   type: "GET_DATA_INDEX";
 }
@@ -159,7 +207,7 @@ export interface AskProfileMsg {
 }
 
 export type ContentToBackground = GetActiveProfilesMsg | CandidatesMsg;
-export type BackgroundToContent = ResultsMsg | FocusMatchMsg | RescanContentMsg;
+export type BackgroundToContent = ResultsMsg | FocusMatchMsg | RescanContentMsg | CollectPageSourceMsg;
 export type PanelToBackground =
   | GetPageMsg
   | RescanMsg
@@ -180,6 +228,8 @@ export type PanelToBackground =
   | GetOriginDocMsg
   | ClearSiteMsg
   | ClearAllMsg
+  | GetDebugMsg
+  | ClearDebugMsg
   | AskDecisionMsg;
 export type BackgroundToPanel = PageMsg | CompiledMsg | KeyStatusMsg | AskProfileMsg;
 

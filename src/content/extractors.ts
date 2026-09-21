@@ -1,4 +1,4 @@
-import type { Candidate, CandidateContext, CandidateHints, CandidateSource, CompiledProfile } from "../shared/types";
+import type { Candidate, CandidateContext, CandidateHints, CandidateSource, CollectionStats, CompiledProfile } from "../shared/types";
 import { adjacentText, buildTextIndex, cleanText, cssPath, elementText, externalHost, isSkipped, normalizeText, precedingHeading } from "./dom";
 
 export interface RawCandidate {
@@ -14,6 +14,25 @@ export interface RawCandidate {
 
 const NO_HINTS = (): CandidateHints => ({ lat: null, lng: null, placeId: null });
 
+// --- Extraction statistics, collected for the debug report --------------------------
+
+type Counter = Omit<CollectionStats, "source"> & { note?: string };
+const counters = new Map<CandidateSource, Counter>();
+
+function counter(source: CandidateSource): Counter {
+  let c = counters.get(source);
+  if (!c) {
+    c = { produced: 0, skippedHidden: 0, skippedShort: 0, deduped: 0, kept: 0 };
+    counters.set(source, c);
+  }
+  return c;
+}
+
+/** Per-source statistics for the most recent collectCandidates() call. */
+export function getLastCollectionStats(): CollectionStats[] {
+  return Array.from(counters.entries()).map(([source, c]) => ({ source, ...c }));
+}
+
 type Extractor = (profiles: CompiledProfile[]) => RawCandidate[];
 
 function tagAll(list: RawCandidate[], profiles: CompiledProfile[]): RawCandidate[] {
@@ -22,9 +41,16 @@ function tagAll(list: RawCandidate[], profiles: CompiledProfile[]): RawCandidate
 }
 
 function fromElement(el: Element, source: CandidateSource, tag = el.tagName.toLowerCase()): RawCandidate | null {
-  if (isSkipped(el)) return null;
+  const stats = counter(source);
+  if (isSkipped(el)) {
+    stats.skippedHidden++;
+    return null;
+  }
   const text = elementText(el);
-  if (text.length < 2) return null;
+  if (text.length < 2) {
+    stats.skippedShort++;
+    return null;
+  }
   return { el, text, tag, source, hints: NO_HINTS(), profiles: new Set() };
 }
 
@@ -141,7 +167,10 @@ const mapEmbeds: Extractor = (profiles) => {
   const out: RawCandidate[] = [];
   const frames = document.querySelectorAll<HTMLIFrameElement>('iframe[src*="google.com/maps"], iframe[src*="openstreetmap"]');
   for (const f of Array.from(frames)) {
-    if (isSkipped(f)) continue;
+    if (isSkipped(f)) {
+      counter("map_embeds").skippedHidden++;
+      continue;
+    }
     const src = f.src;
     const hints = coordsFromMapUrl(src);
     const q = /[?&]q=([^&]+)/.exec(src);
@@ -150,7 +179,10 @@ const mapEmbeds: Extractor = (profiles) => {
   }
   const links = document.querySelectorAll<HTMLAnchorElement>('a[href*="maps.app.goo.gl"], a[href*="google.com/maps"], a[href*="openstreetmap.org"]');
   for (const a of Array.from(links)) {
-    if (isSkipped(a)) continue;
+    if (isSkipped(a)) {
+      counter("map_embeds").skippedHidden++;
+      continue;
+    }
     const hints = coordsFromMapUrl(a.href);
     const text = elementText(a) || cleanText(a.href, 200);
     out.push({ el: a, text, tag: "a", source: "map_embeds", hints, profiles: new Set() });
@@ -202,7 +234,10 @@ const textPatterns: Extractor = (profiles) => {
   const seenPerElement = new Map<Element, Set<string>>();
   for (const node of textNodesUnder(document.body)) {
     const parent = node.parentElement!;
-    if (isSkipped(parent)) continue;
+    if (isSkipped(parent)) {
+      counter("text_patterns").skippedHidden++;
+      continue;
+    }
     const text = node.data.replace(/\s+/g, " ");
     for (const { profile, regexes } of perProfile) {
       for (const re of regexes) {
@@ -308,6 +343,7 @@ function contextRichness(c: RawCandidate): number {
 export function collectCandidates(profiles: CompiledProfile[]): Candidate[] {
   // Clear tags from a previous scan so ids never go stale.
   for (const el of Array.from(document.querySelectorAll("[data-geo-id]"))) el.removeAttribute("data-geo-id");
+  counters.clear();
 
   const bySource = new Map<CandidateSource, CompiledProfile[]>();
   for (const p of profiles) {
@@ -322,8 +358,11 @@ export function collectCandidates(profiles: CompiledProfile[]): Candidate[] {
     const owners = bySource.get(source);
     if (!owners?.length) continue;
     try {
-      raws = raws.concat(EXTRACTORS[source](owners));
+      const produced = EXTRACTORS[source](owners);
+      counter(source).produced += produced.length;
+      raws = raws.concat(produced);
     } catch (err) {
+      counter(source).note = `extractor threw: ${(err as Error).message}`;
       console.warn(`[page-extractor] extractor ${source} failed`, err);
     }
   }
@@ -337,6 +376,7 @@ export function collectCandidates(profiles: CompiledProfile[]): Candidate[] {
     if (!existing) {
       byText.set(key, c);
     } else {
+      counter(c.source).deduped++;
       for (const pid of c.profiles) existing.profiles.add(pid);
       if (contextRichness(c) > contextRichness(existing)) {
         c.profiles = existing.profiles;
@@ -350,6 +390,12 @@ export function collectCandidates(profiles: CompiledProfile[]): Candidate[] {
   const contextChars = Math.max(...profiles.map((p) => p.selection.contextChars), 0);
   const ordered = Array.from(byText.values()).sort((a, b) => SOURCE_PRIORITY.indexOf(a.source) - SOURCE_PRIORITY.indexOf(b.source));
   const kept = ordered.slice(0, cap);
+  for (const c of kept) counter(c.source).kept++;
+  if (ordered.length > cap) {
+    const dropped = ordered.length - cap;
+    const c = counter(ordered[cap].source);
+    c.note = `${c.note ? c.note + "; " : ""}${dropped} candidate(s) dropped by maxCandidates=${cap}`;
+  }
 
   const textIndex = contextChars > 0 ? buildTextIndex() : [];
   const out: Candidate[] = [];

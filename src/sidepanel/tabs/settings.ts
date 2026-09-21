@@ -3,6 +3,7 @@ import type { CompiledProfile, KeyStatus, Settings } from "../../shared/types";
 import { refreshProfiles, refreshSettings, state } from "../state";
 import { h, money, toast } from "../ui";
 import { requestHostPermission } from "../permissions";
+import { renderDebugSection } from "./debug";
 
 const MODEL_SUGGESTIONS = ["openai/gpt-4.1-mini", "anthropic/claude-sonnet-5", "google/gemini-2.5-flash", "openai/gpt-4.1", "anthropic/claude-opus-5"];
 
@@ -138,4 +139,5 @@ export function renderSettingsTab(root: HTMLElement): void {
     h("p", { class: "small muted", style: "margin-top:14px" }, "Jev model: typesafe/jev-1.13 (pinned). Sensitive pages (banking, healthcare, mail, auth) and pages served with Cache-Control: no-store are never scanned."),
     h("button", { class: "sm", style: "margin-top:6px", on: { click: () => void patch({ onboarded: false }) } }, "Re-run first-time setup"),
   );
+  renderDebugSection(root);
 }

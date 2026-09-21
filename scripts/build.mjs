@@ -14,13 +14,20 @@ const outdir = resolve(root, target === "firefox" ? "dist-firefox" : "dist");
 rmSync(outdir, { recursive: true, force: true });
 mkdirSync(outdir, { recursive: true });
 
+// Stamped into every bundle so a debug report can reveal a stale content script
+// still running in a tab that was not reloaded after a rebuild.
+const buildId = `${new Date().toISOString().slice(0, 16).replace(/[-:T]/g, "")}-${Math.random().toString(36).slice(2, 6)}`;
+
 const common = {
   bundle: true,
   target: ["chrome120", "firefox121"],
   sourcemap: watch ? "inline" : false,
   minify: !watch,
   logLevel: "info",
-  define: { "process.env.NODE_ENV": JSON.stringify(watch ? "development" : "production") },
+  define: {
+    "process.env.NODE_ENV": JSON.stringify(watch ? "development" : "production"),
+    __BUILD_ID__: JSON.stringify(buildId),
+  },
   legalComments: "none",
 };
 
@@ -58,10 +65,10 @@ function buildManifest(target) {
 if (watch) {
   copyStatic();
   await Promise.all(contexts.map((c) => c.watch()));
-  console.log(`watching → ${outdir}`);
+  console.log(`watching → ${outdir} (build ${buildId})`);
 } else {
   await Promise.all(contexts.map((c) => c.rebuild()));
   copyStatic();
   await Promise.all(contexts.map((c) => c.dispose()));
-  console.log(`built → ${outdir}`);
+  console.log(`built → ${outdir} (build ${buildId})`);
 }
