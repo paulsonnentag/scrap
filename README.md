@@ -85,11 +85,23 @@ Downloads are available as `.md` or as raw `.json`. Inline script and style bodi
 
 Request and response bodies are kept up to 256 KB each for the last 12 calls, and truncation is marked inline. Anything matching an API-key pattern is stripped, but the dump contains the page's URL and content, so read it before sharing.
 
+## Confirmed System One response shape
+
+The spec flagged the System One request/response shape as unverified. It has since been confirmed against `typesafe/jev-1.13` on live traffic. Each answer object carries a `type` field plus a field named after that type:
+
+```json
+"c1_resolve": { "type": "noul", "noul": 0.75 },
+"c1_kind":    { "type": "choice", "choice": "street_address",
+                "probabilities": { "street_address": 0.44, "not_a_place": 0.32, "business_name": 0.23 },
+                "confidence": 0.29 }
+```
+
+A `noul` answer is P(true) as a bare number, not a value plus a probability. `normalizeAnswer` in `src/shared/jev.ts` reads that shape first and keeps the distribution and confidence alongside the chosen option. It still accepts `{ value, probability }`, `{ answer, confidence }`, a bare distribution and a bare number, so a future change degrades rather than dropping every answer. The response also reports the dated model that served the request, such as `typesafe/jev-1.13-20260917`, which is recorded on every match.
+
 ## Assumptions to verify before shipping
 
-The spec notes that the System One request/response shape should be checked against OpenRouter's current reference. The client sends `{ model, state, questions }` and reads `answers[questionId]`. `normalizeAnswer` in `src/shared/jev.ts` accepts `{ value, probability }` as documented, plus `{ answer, confidence }`, a `probabilities` distribution, and a bare probability, so a small shape drift degrades gracefully rather than failing. `usage.cost` and the `model` field from each response feed the spend meter and match records.
-
 Other things worth checking on real traffic:
+
 
 - Default compiler model (`openai/gpt-4.1-mini`) versus alternatives, per the spec's open question.
 - Threshold defaults (`0.85` accept, `0.5` review) against a labeled set, per the spec's **Evaluation** section.

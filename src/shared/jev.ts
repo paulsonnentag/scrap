@@ -128,12 +128,17 @@ export function buildRequests(page: PageDescriptor, profiles: CompiledProfile[],
 
 /**
  * Normalize a raw answer from the System One endpoint into {value, probability}.
- * The exact response shape should be verified against OpenRouter's reference; this accepts
- * the shapes seen in the SDK docs and a few defensive variants:
- *   - { value, probability }              (documented)
- *   - { answer, confidence }              (variant naming)
- *   - { probabilities: { a: 0.2, b: 0.8 } }  (distribution; pick argmax)
- *   - 0.83                                (bare probability for noul → value = p >= 0.5)
+ *
+ * The documented shape, confirmed against typesafe/jev-1.13 responses, is an object with a
+ * `type` field plus a field named after that type holding the answer:
+ *   { "type": "noul", "noul": 0.75 }                       → noul gives P(true) directly
+ *   { "type": "choice", "choice": "street_address",
+ *     "probabilities": { ... }, "confidence": 0.29 }       → choice names the option
+ *   { "type": "score", "score": 3, "confidence": 0.8 }
+ *
+ * A few defensive variants are also accepted, so a future shape change degrades instead of
+ * dropping every answer: { value, probability }, { answer, confidence }, a bare
+ * `probabilities` distribution, and a bare number.
  */
 export function normalizeAnswer(raw: unknown, question: JevQuestion): JevAnswer | null {
   if (raw == null) return null;
@@ -147,31 +152,65 @@ export function normalizeAnswer(raw: unknown, question: JevQuestion): JevAnswer 
   if (typeof raw !== "object") return null;
   const o = raw as Record<string, unknown>;
 
-  const dist = (o.probabilities ?? o.distribution) as Record<string, number> | undefined;
-  if (dist && typeof dist === "object") {
+  const probabilities = (o.probabilities ?? o.distribution) as Record<string, number> | undefined;
+  const confidence = typeof o.confidence === "number" ? clamp01(o.confidence) : undefined;
+
+  const build = (value: string | number | boolean, probability: number): JevAnswer => {
+    const answer: JevAnswer = { value, probability: clamp01(probability) };
+    if (confidence !== undefined) answer.confidence = confidence;
+    if (probabilities && typeof probabilities === "object") answer.probabilities = probabilities;
+    return answer;
+  };
+
+  // Primary shape: the answer lives under a key named after the question type.
+  const kind = typeof o.type === "string" ? (o.type as string) : question.type;
+  const typed = o[kind];
+  if (kind === "noul") {
+    if (typeof typed === "number") {
+      const pTrue = clamp01(typed);
+      return build(pTrue >= 0.5, pTrue >= 0.5 ? pTrue : 1 - pTrue);
+    }
+    if (typeof typed === "boolean") return build(typed, confidence ?? 1);
+  }
+  if (kind === "choice" && typeof typed === "string") {
+    const fromDist = probabilities && typeof probabilities[typed] === "number" ? probabilities[typed] : undefined;
+    return build(typed, fromDist ?? confidence ?? 1);
+  }
+  if (kind === "score" && (typeof typed === "number" || typeof typed === "string")) {
+    const fromDist = probabilities && typeof probabilities[String(typed)] === "number" ? probabilities[String(typed)] : undefined;
+    return build(coerceValue(typed, question), fromDist ?? confidence ?? 1);
+  }
+
+  // Fallback: a bare distribution, with no explicit answer field.
+  if (probabilities && typeof probabilities === "object") {
     let best: string | null = null;
     let bestP = -1;
-    for (const [k, v] of Object.entries(dist)) {
+    for (const [k, v] of Object.entries(probabilities)) {
       if (typeof v === "number" && v > bestP) {
         best = k;
         bestP = v;
       }
     }
-    if (best != null) return { value: coerceValue(best, question), probability: clamp01(bestP) };
+    if (best != null) {
+      if (question.type === "noul") {
+        const pTrue = clamp01(typeof probabilities.true === "number" ? probabilities.true : best === "true" ? bestP : 1 - bestP);
+        return build(pTrue >= 0.5, pTrue >= 0.5 ? pTrue : 1 - pTrue);
+      }
+      return build(coerceValue(best, question), bestP);
+    }
   }
 
-  const value = o.value ?? o.answer ?? o.choice ?? o.label ?? o.result;
-  let probability = o.probability ?? o.confidence ?? o.p ?? o.score;
+  // Fallback: { value | answer | label | result, probability | confidence | p | score }.
+  const value = o.value ?? o.answer ?? o.label ?? o.result;
   if (value === undefined) return null;
-  if (typeof probability !== "number") probability = 1;
+  const rawProbability = o.probability ?? o.confidence ?? o.p;
+  const probability = typeof rawProbability === "number" ? clamp01(rawProbability) : 1;
   const coerced = coerceValue(value, question);
-  let p = clamp01(probability as number);
-  // Normalize noul so that `probability` always means P(value is true).
   if (question.type === "noul") {
-    if (coerced === false) return { value: false, probability: p };
-    return { value: true, probability: p };
+    if (coerced === false) return build(false, probability);
+    return build(true, probability);
   }
-  return { value: coerced, probability: p };
+  return build(coerced, probability);
 }
 
 function coerceValue(v: unknown, q: JevQuestion): string | number | boolean {

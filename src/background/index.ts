@@ -117,8 +117,14 @@ async function handle(msg: ContentToBackground | PanelToBackground, sender: chro
     case "RESCAN": {
       const state = tabs.get(msg.tabId);
       if (state) state.testProfiles = undefined;
-      await sendToTab(msg.tabId, { type: "RESCAN_CONTENT" });
-      return { ok: true };
+      try {
+        await sendToTab(msg.tabId, { type: "RESCAN_CONTENT" });
+        return { ok: true };
+      } catch (err) {
+        // No content script in this tab: it predates the extension install or reload.
+        logEvent("warn", "message/RESCAN", (err as Error).message, { tabId: msg.tabId });
+        return { ok: false, error: "The content script is not running in this tab. Reload the page and try again." };
+      }
     }
     case "REVIEW": {
       const match = await setMatchStatus(msg.origin, msg.url, msg.matchId, msg.decision);

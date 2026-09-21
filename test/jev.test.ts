@@ -73,12 +73,12 @@ describe("answer normalization", () => {
   const choice = LOCATIONS_PROFILE.questions[1];
   it("accepts the documented {value, probability} shape", () => {
     expect(normalizeAnswer({ value: true, probability: 0.91 }, noul)).toEqual({ value: true, probability: 0.91 });
-    expect(normalizeAnswer({ value: "street_address", probability: 0.8 }, choice)).toEqual({ value: "street_address", probability: 0.8 });
+    expect(normalizeAnswer({ value: "street_address", probability: 0.8 }, choice)).toMatchObject({ value: "street_address", probability: 0.8 });
   });
   it("accepts alternate field names and distributions", () => {
-    expect(normalizeAnswer({ answer: "false", confidence: 0.7 }, noul)).toEqual({ value: false, probability: 0.7 });
-    expect(normalizeAnswer({ probabilities: { landmark: 0.1, street_address: 0.85, not_a_place: 0.05 } }, choice)).toEqual({ value: "street_address", probability: 0.85 });
-    expect(normalizeAnswer(0.2, noul)).toEqual({ value: false, probability: 0.8 });
+    expect(normalizeAnswer({ answer: "false", confidence: 0.7 }, noul)).toMatchObject({ value: false, probability: 0.7 });
+    expect(normalizeAnswer({ probabilities: { landmark: 0.1, street_address: 0.85, not_a_place: 0.05 } }, choice)).toMatchObject({ value: "street_address", probability: 0.85 });
+    expect(normalizeAnswer(0.2, noul)).toMatchObject({ value: false, probability: 0.8 });
   });
   it("computes P(true) regardless of which side the answer reports", () => {
     expect(truthProbability({ value: true, probability: 0.9 })).toBeCloseTo(0.9);

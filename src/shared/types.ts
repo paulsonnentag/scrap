@@ -144,7 +144,12 @@ export interface PageDescriptor {
 
 export interface JevAnswer {
   value: string | number | boolean;
+  /** P(value). For noul this is P(true) when value is true, P(false) when value is false. */
   probability: number;
+  /** The model's own confidence field, when it reports one separately from the distribution. */
+  confidence?: number;
+  /** Full distribution over options, for choice and score answers. */
+  probabilities?: { [option: string]: number };
 }
 
 export type MatchStatus = "accepted" | "review" | "rejected" | "confirmed";
