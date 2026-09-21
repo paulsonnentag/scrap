@@ -2,11 +2,10 @@
  * Assembles the pasteable debug report: the last scan's trace, the page source as the
  * extractors saw it, the event log, and a ranked diagnosis.
  */
-import { BUILD_ID, diagnose, type DebugReport, type PageSourceTrace } from "../shared/debug";
+import { BUILD_ID, type DebugReport, type PageSourceTrace } from "../shared/debug";
 import type { GetDebugMsg, PageSourceReply } from "../shared/messages";
-import { getLog, getScanTrace, ready } from "./debugLog";
-import { verifyKey } from "./openrouter";
-import { getApiKey } from "./storage";
+import { getLog, getScanTrace, jevCallsSince, ready } from "./debugLog";
+import { listProfiles } from "./repo";
 
 /** Ask the content script for the page source; fall back to an injected snapshot. */
 async function capturePageSource(tabId: number, maxChars: number, raw: boolean): Promise<{ source: PageSourceTrace; reply?: PageSourceReply }> {
@@ -26,6 +25,7 @@ async function capturePageSource(tabId: number, maxChars: number, raw: boolean):
           truncated: reply.truncated,
           filtered: reply.filtered,
           html: reply.html,
+          lastContentScan: reply.lastScan,
         },
       };
     }
@@ -79,11 +79,6 @@ export async function buildDebugReport(msg: GetDebugMsg): Promise<DebugReport> {
   const pageSource = msg.includeSource ? (await capturePageSource(msg.tabId, msg.maxSourceChars, msg.raw)).source : { available: false, via: "unavailable" as const, error: "not requested" };
   const scan = getScanTrace(msg.tabId);
 
-  if (scan?.setup.hasKey && scan.setup.keyLooksValid === null) {
-    const key = await getApiKey();
-    if (key) scan.setup.keyLooksValid = (await verifyKey(key)).valid;
-  }
-
   const report: DebugReport = {
     generatedAt: new Date().toISOString(),
     extensionVersion: manifest.version,
@@ -91,10 +86,10 @@ export async function buildDebugReport(msg: GetDebugMsg): Promise<DebugReport> {
     browser: navigator.userAgent,
     tabUrl: tabUrl || scan?.url || "",
     scan,
+    profiles: await listProfiles().catch(() => []),
+    jevCalls: jevCallsSince(scan?.startedAt ?? "", undefined),
     pageSource,
     log: getLog(),
-    diagnosis: [],
   };
-  report.diagnosis = diagnose(report);
   return report;
 }

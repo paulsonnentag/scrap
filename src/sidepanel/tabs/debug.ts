@@ -1,6 +1,6 @@
 /**
- * Diagnostics UI: generates a single pasteable report describing the last scan of the
- * active tab, why it stopped where it did, and the page source the extractors saw.
+ * Raw dump UI. Collects the last scan's state and the exact Jev request/response bodies
+ * and hands them over as one pasteable document, without interpreting any of it.
  */
 import { renderDebugReport, type DebugReport } from "../../shared/debug";
 import { sendToBackground } from "../../shared/messages";
@@ -17,7 +17,7 @@ const options: Options = { includeSource: true, raw: false, maxSourceChars: 200_
 let lastReport: { report: DebugReport; markdown: string } | undefined;
 let pendingAutoRun = false;
 
-/** Called from the This page tab: switch to Settings and generate immediately. */
+/** Called from the This page tab: switch to Settings and dump immediately. */
 export function requestDiagnosis(): void {
   pendingAutoRun = true;
   document.querySelector<HTMLButtonElement>('[data-tab="settings"]')?.click();
@@ -46,7 +46,7 @@ async function generate(container: HTMLElement, btn?: HTMLButtonElement): Promis
   } finally {
     if (btn) {
       btn.disabled = false;
-      btn.textContent = "Generate report";
+      btn.textContent = "Dump raw data";
     }
   }
 }
@@ -72,22 +72,24 @@ function renderResult(container: HTMLElement): void {
   const { report, markdown } = lastReport;
   const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
 
+  const jev = report.jevCalls.length;
+  const cands = report.scan?.candidateCount ?? 0;
   container.append(
-    h("h3", {}, "Verdict"),
-    h("div", { class: "card" }, ...report.diagnosis.map((d, i) => h("p", { class: "small", style: i === 0 ? "font-weight:600" : "" }, `${i + 1}. ${d}`))),
+    h("p", { class: "small" }, `Dump ready: ${Math.round(markdown.length / 1024)} KB · ${jev} Jev call${jev === 1 ? "" : "s"} with full request and response bodies · ${cands} candidate${cands === 1 ? "" : "s"} · ${report.scan ? `stage ${report.scan.stage}` : "no scan recorded"}.`),
     h(
       "div",
       { class: "row" },
-      h("button", { class: "primary", on: { click: () => void copy(markdown) } }, "Copy report"),
-      h("button", { on: { click: () => download(`page-extractor-debug-${stamp}.md`, markdown, "text/markdown") } }, "Download .md"),
+      h("button", { class: "primary", on: { click: () => void copy(markdown) } }, "Copy dump"),
+      h("button", { on: { click: () => download(`page-extractor-dump-${stamp}.md`, markdown, "text/markdown") } }, "Download .md"),
+      h("button", { on: { click: () => download(`page-extractor-dump-${stamp}.json`, JSON.stringify(report, null, 2), "application/json") } }, "Download .json"),
       report.pageSource.html ? h("button", { on: { click: () => download(`page-source-${stamp}.html`, report.pageSource.html!, "text/html") } }, "Page source only") : null,
     ),
     h(
       "p",
       { class: "small muted" },
-      `${Math.round(markdown.length / 1024)} KB · page source ${report.pageSource.available ? `${(report.pageSource.bytesIncluded ?? 0).toLocaleString()} of ${(report.pageSource.bytesOriginal ?? 0).toLocaleString()} chars${report.pageSource.truncated ? ", truncated" : ""}` : "not captured"}. API keys are stripped, but the report contains this page's URL and content, so read it before sharing.`,
+      `Page source ${report.pageSource.available ? `${(report.pageSource.bytesIncluded ?? 0).toLocaleString()} of ${(report.pageSource.bytesOriginal ?? 0).toLocaleString()} chars${report.pageSource.truncated ? ", truncated" : ""}` : "not captured"}. API keys are stripped, but the dump contains this page's URL and content, so read it before sharing.`,
     ),
-    h("details", {}, h("summary", { class: "small" }, "Preview"), h("pre", { class: "mono", style: "white-space:pre-wrap;word-break:break-word;max-height:300px;overflow:auto;font-size:11px" }, markdown.slice(0, 4000) + (markdown.length > 4000 ? "\n… truncated in this preview; the copied report is complete." : ""))),
+    h("details", {}, h("summary", { class: "small" }, "Preview"), h("pre", { class: "mono", style: "white-space:pre-wrap;word-break:break-word;max-height:300px;overflow:auto;font-size:11px" }, markdown.slice(0, 4000) + (markdown.length > 4000 ? "\n… preview only; the copied dump is complete." : ""))),
   );
 }
 
@@ -96,8 +98,8 @@ export function renderDebugSection(root: HTMLElement): void {
   const genBtn = h("button", { class: "primary", on: { click: (e) => void generate(results, e.currentTarget as HTMLButtonElement) } }, "Generate report");
 
   root.append(
-    h("h2", {}, "Diagnostics"),
-    h("p", { class: "small muted" }, "Builds one pasteable report: what the last scan did on the active tab, where it stopped, every Jev request and the raw answers it got back, and the page source the extractors saw."),
+    h("h2", {}, "Raw dump"),
+    h("p", { class: "small muted" }, "Dumps the last scan of the active tab verbatim: the full scan state, every Jev request and response body exactly as sent and received, the stored profiles, the event log, and the page source. Nothing is summarized."),
     h(
       "div",
       { class: "stack" },

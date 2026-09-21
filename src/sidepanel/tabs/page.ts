@@ -123,7 +123,7 @@ export function renderPageTab(root: HTMLElement): void {
       h(
         "div",
         { class: "row" },
-        h("button", { class: "sm", title: "Build a pasteable report explaining what this scan did", on: { click: () => requestDiagnosis() } }, "Diagnose"),
+        h("button", { class: "sm", title: "Dump the raw scan state and Jev request/response bodies", on: { click: () => requestDiagnosis() } }, "Dump"),
         h("button", { class: "sm", on: { click: (e) => void rescan(e.currentTarget as HTMLButtonElement) } }, "Rescan"),
       ),
     ),
@@ -160,8 +160,8 @@ export function renderPageTab(root: HTMLElement): void {
         "div",
         { class: "card" },
         h("p", { class: "small" }, "Nothing to show for this page."),
-        h("p", { class: "small muted" }, "Generate a debug report to see which profiles were considered, what the extractors found, and what Jev answered."),
-        h("button", { class: "primary sm", on: { click: () => requestDiagnosis() } }, "Explain why"),
+        h("p", { class: "small muted" }, "Dump the raw scan state, including every Jev request and response body, to see what happened."),
+        h("button", { class: "primary sm", on: { click: () => requestDiagnosis() } }, "Dump raw data"),
       ),
     );
     return;

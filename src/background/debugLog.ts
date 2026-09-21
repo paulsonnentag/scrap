@@ -6,7 +6,7 @@
 import type { JevCallTrace, LogEntry, ScanTrace } from "../shared/debug";
 
 const MAX_LOG = 300;
-const MAX_JEV_CALLS = 30;
+const MAX_JEV_CALLS = 12;
 const SESSION_KEY = "debug_state";
 
 interface DebugState {

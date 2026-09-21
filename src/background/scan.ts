@@ -8,10 +8,10 @@ import type { CandidateTrace, ProfileTrace, ScanTrace, SetupTrace } from "../sha
 import { matchId, newId } from "../shared/hash";
 import { JEV_MODEL, applicableResolvers, buildRequests, decideStatus, groupAnswers, normalizeAnswer, truthProbability, type JevResponse } from "../shared/jev";
 import { broadcast, sendToTab, type CandidatesMsg } from "../shared/messages";
-import { matchesAny, matchesPattern } from "../shared/matchPatterns";
+import { matchesAny } from "../shared/matchPatterns";
 import { classifySensitiveUrl } from "../shared/sensitive";
-import type { CompiledProfile, GeocodeResult, JevAnswer, Match, ScanSummary } from "../shared/types";
-import { jevCallsSince, logEvent, saveScanTrace } from "./debugLog";
+import type { CompiledProfile, JevAnswer, Match, ScanSummary } from "../shared/types";
+import { logEvent, saveScanTrace } from "./debugLog";
 import { systemOne } from "./openrouter";
 import { listProfiles, writeScan } from "./repo";
 import { getApiKey, getAskDecision, getSettings } from "./storage";
@@ -54,14 +54,12 @@ async function buildSetupTrace(all: CompiledProfile[]): Promise<SetupTrace> {
   }
   return {
     hasKey: !!key,
-    keyLooksValid: key ? null : false,
     onboarded: settings.onboarded,
     compilerModel: settings.compilerModel,
     jevEndpoint: settings.typesafeBaseUrl && settings.typesafeKey ? "typesafe-direct" : "openrouter",
     profileCount: all.length,
     enabledCount: all.filter((p) => p.enabled).length,
     hostPermissions,
-    hasAllUrlsPermission: hostPermissions.includes("<all_urls>") || hostPermissions.includes("*://*/*"),
   };
 }
 
@@ -70,21 +68,11 @@ function profileTrace(p: CompiledProfile, url: string, origin: string): ProfileT
     id: p.id,
     name: p.name,
     enabled: p.enabled,
-    builtin: p.builtin,
-    customized: p.customized,
     version: p.version,
     matchPatterns: p.scope.matchPatterns ?? [],
     patternMatched: matchesAny(p.scope.matchPatterns ?? [], url),
     override: p.scope.siteOverrides?.[origin],
-    sources: p.selection.sources,
-    textPatterns: p.selection.textPatterns,
-    structuredTypes: p.selection.structuredTypes,
-    questionIds: p.questions.map((q) => q.id),
-    acceptField: p.decision.acceptField,
-    acceptThreshold: p.decision.acceptThreshold,
-    reviewThreshold: p.decision.reviewThreshold,
     active: false,
-    reason: "",
   };
 }
 
@@ -113,13 +101,11 @@ export async function resolveActiveProfiles(
     title,
     trigger,
     stage: "profile-matching",
-    outcome: "",
     setup: await buildSetupTrace(all),
     profiles: all.map((p) => profileTrace(p, url, origin)),
     candidateCount: 0,
     extractors: [],
     candidates: [],
-    jevCalls: [],
     resolvers: [],
     errors: [],
   };
@@ -127,7 +113,6 @@ export async function resolveActiveProfiles(
   const traceOf = (id: string) => trace.profiles.find((t) => t.id === id)!;
 
   if (!trace.setup.hasKey || !trace.setup.onboarded) {
-    for (const t of trace.profiles) t.reason = "setup incomplete";
     return finish(state, [], !trace.setup.hasKey ? "setup incomplete: no API key" : "setup incomplete: first run not finished", tabId);
   }
 
@@ -136,60 +121,43 @@ export async function resolveActiveProfiles(
   trace.sensitive = sensitive?.reason;
   trace.noStore = noStore || state.noStore;
   if (sensitive && !(forcedHere && sensitive.kind === "host")) {
-    for (const t of trace.profiles) t.reason = `page is sensitive (${sensitive.reason})`;
     return finish(state, [], `skipped: ${sensitive.reason}`, tabId);
   }
   if (trace.noStore) {
-    for (const t of trace.profiles) t.reason = "page served with Cache-Control: no-store";
     return finish(state, [], "skipped: Cache-Control: no-store", tabId);
   }
 
   const candidates: CompiledProfile[] = [];
   for (const p of all) {
     const t = traceOf(p.id);
-    if (!p.enabled) {
-      t.reason = "profile is disabled";
-      continue;
-    }
+    if (!p.enabled) continue;
     const override = p.scope.siteOverrides?.[origin];
-    if (override === "never") {
-      t.reason = `site override "never run here" for ${origin}`;
-      continue;
-    }
+    if (override === "never") continue;
     const patternMatch = matchesAny(p.scope.matchPatterns ?? [], url);
     if (override === "always") {
-      t.reason = `site override "always run here" for ${origin}`;
       candidates.push(p);
       continue;
     }
-    if (!patternMatch) {
-      t.reason = (p.scope.matchPatterns ?? []).length ? `no pattern matches this URL (${p.scope.matchPatterns.join(", ")})` : "profile has no match patterns, so it runs nowhere until you add one or enable it for this site";
-      continue;
-    }
+    if (!patternMatch) continue;
     if (override === "ask") {
       const decision = await getAskDecision(p.id, origin);
       if (decision === undefined) {
-        t.reason = "waiting for an answer to the per-site prompt in the This page tab";
+        t.askPending = true;
         await broadcast({ type: "ASK_PROFILE", profileId: p.id, profileName: p.name, origin, tabId });
         continue;
       }
       if (!decision) {
-        t.reason = "declined for this site in this browser session";
+        t.askDeclined = true;
         continue;
       }
     }
-    t.reason = `matched ${p.scope.matchPatterns.find((mp) => matchesPattern(mp, url)) ?? "pattern"}`;
     candidates.push(p);
   }
   if (!candidates.length) return finish(state, [], "no profile applies to this URL", tabId);
 
   trace.stage = "page-gate";
   const gated = await applyPageGates(candidates, url, title, summary, trace);
-  for (const p of gated) {
-    const t = traceOf(p.id);
-    t.active = true;
-    t.reason += "; active";
-  }
+  for (const p of gated) traceOf(p.id).active = true;
   return finish(state, gated, gated.length ? undefined : "every applicable profile was rejected by its page gate", tabId);
 }
 
@@ -197,12 +165,11 @@ function finish(state: TabState, profiles: CompiledProfile[], skipped: string | 
   state.profiles = profiles;
   if (state.trace) {
     if (skipped) {
-      state.trace.outcome = skipped;
+      state.trace.stoppedBecause = skipped;
       state.trace.finishedAt = new Date().toISOString();
       logEvent("info", "scan", `stopped: ${skipped}`, { url: state.url });
     } else {
       state.trace.stage = "extracting";
-      state.trace.outcome = "waiting for candidates from the content script";
     }
     saveScanTrace(tabId, state.trace);
   }
@@ -237,10 +204,7 @@ async function applyPageGates(profiles: CompiledProfile[], url: string, title: s
     const probability = truthProbability(normalizeAnswer(raw, p.scope.pageGate) ?? undefined);
     const passed = probability >= p.scope.pageGateThreshold;
     const t = trace?.profiles.find((x) => x.id === p.id);
-    if (t) {
-      t.gate = { probability, threshold: p.scope.pageGateThreshold, passed };
-      if (!passed) t.reason += `; page gate rejected it (p=${probability.toFixed(2)} < ${p.scope.pageGateThreshold})`;
-    }
+    if (t) t.pageGate = { probability, threshold: p.scope.pageGateThreshold, passed };
     return passed;
   });
 }
@@ -261,20 +225,11 @@ export async function handleCandidates(tabId: number, msg: CandidatesMsg): Promi
   const summary: ScanSummary = { url: msg.url, origin, scannedAt: new Date().toISOString(), candidates: msg.candidates.length, requests: 0, matches: [] };
 
   const trace = state.trace;
-  const judgeStartedAt = new Date().toISOString();
   if (trace) {
     trace.lang = page.lang;
     if (msg.trigger) trace.trigger = msg.trigger;
     trace.candidateCount = msg.candidates.length;
-    trace.extractors = (msg.stats ?? []).map((s) => ({
-      source: s.source,
-      produced: s.produced,
-      skippedHidden: s.skippedHidden,
-      skippedShort: s.skippedShort,
-      deduped: s.deduped,
-      kept: s.kept,
-      note: s.note,
-    }));
+    trace.extractors = msg.stats ?? [];
     trace.candidates = msg.candidates.map<CandidateTrace>((c) => ({
       id: c.id,
       text: c.text,
@@ -291,7 +246,7 @@ export async function handleCandidates(tabId: number, msg: CandidatesMsg): Promi
   try {
     if (!profiles.length || !msg.candidates.length) {
       summary.skipped = profiles.length ? "no candidates" : "no active profiles";
-      if (trace) trace.outcome = profiles.length ? "the extractors produced no candidates on this page" : "no active profiles when candidates arrived";
+      if (trace) trace.stoppedBecause = summary.skipped;
     } else {
       if (trace) trace.stage = "judging";
       const requests = buildRequests(page, profiles, msg.candidates);
@@ -322,11 +277,11 @@ export async function handleCandidates(tabId: number, msg: CandidatesMsg): Promi
           for (const t of profile.questions) if (allAnswers[t.id]) answers[t.id] = allAnswers[t.id];
           const acceptAnswer = answers[profile.decision.acceptField];
           if (!acceptAnswer) {
-            ct?.decisions.push({ profileId: profile.id, acceptProbability: null, status: "no-answer", answers });
+            ct?.decisions.push({ profileId: profile.id, acceptField: profile.decision.acceptField, acceptProbability: null, status: "no-answer", answers });
             continue;
           }
           const status = decideStatus(profile, answers);
-          ct?.decisions.push({ profileId: profile.id, acceptProbability: truthProbability(acceptAnswer), status, answers });
+          ct?.decisions.push({ profileId: profile.id, acceptField: profile.decision.acceptField, acceptProbability: truthProbability(acceptAnswer), status, answers });
           if (status === "discard") continue;
           const match: Match = {
             id: matchId(profile.id, candidate.text, msg.url),
@@ -352,20 +307,7 @@ export async function handleCandidates(tabId: number, msg: CandidatesMsg): Promi
         if (trace) {
           for (const job of jobs) {
             for (const [type, value] of Object.entries(job.match.resolved ?? {})) {
-              const failed = value && typeof value === "object" && "error" in (value as object);
-              trace.resolvers.push({
-                type,
-                candidateId: job.candidate.id,
-                candidateText: job.candidate.text,
-                ok: !failed && value !== null,
-                detail: failed
-                  ? String((value as { error: unknown }).error)
-                  : value === null
-                    ? "no result (geocoder found nothing, or Jev verification rejected it)"
-                    : type === "geocode"
-                      ? `${(value as GeocodeResult).lat}, ${(value as GeocodeResult).lng} via ${(value as GeocodeResult).provider}`
-                      : JSON.stringify(value).slice(0, 200),
-              });
+              trace.resolvers.push({ type, candidateId: job.candidate.id, candidateText: job.candidate.text, value });
             }
           }
         }
@@ -379,16 +321,16 @@ export async function handleCandidates(tabId: number, msg: CandidatesMsg): Promi
         summary.matches = summary.matches.map((m) => stored.find((s) => s.id === m.id) ?? m);
       }
       if (trace) {
-        const accepted = summary.matches.filter((m) => m.status === "accepted" || m.status === "confirmed").length;
-        const review = summary.matches.filter((m) => m.status === "review").length;
-        trace.stored = { matches: summary.matches.length, accepted, review };
-        trace.outcome = summary.matches.length ? `done: ${accepted} accepted, ${review} in review from ${msg.candidates.length} candidates` : `every one of the ${msg.candidates.length} candidates scored below the review threshold`;
+        trace.stored = {
+          matches: summary.matches.length,
+          accepted: summary.matches.filter((m) => m.status === "accepted" || m.status === "confirmed").length,
+          review: summary.matches.filter((m) => m.status === "review").length,
+        };
       }
     }
   } catch (err) {
     summary.error = (err as Error).message;
     trace?.errors.push({ where: trace.stage, message: (err as Error).message, stack: (err as Error).stack });
-    if (trace) trace.outcome = `failed during ${trace.stage}: ${(err as Error).message}`;
     logEvent("error", "scan", (err as Error).message, { url: msg.url });
   }
 
@@ -397,9 +339,6 @@ export async function handleCandidates(tabId: number, msg: CandidatesMsg): Promi
   if (trace) {
     trace.stage = "done";
     trace.finishedAt = new Date().toISOString();
-    // Gate calls happen before the candidates arrive; judging and verification after.
-    const gateCalls = jevCallsSince(trace.startedAt).filter((c) => c.purpose === "page_gate");
-    trace.jevCalls = [...gateCalls, ...jevCallsSince(judgeStartedAt).filter((c) => c.purpose !== "page_gate")];
     saveScanTrace(tabId, trace);
   }
 

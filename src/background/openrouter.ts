@@ -1,5 +1,4 @@
 import type { JevRequest, JevResponse } from "../shared/jev";
-import { normalizeAnswer } from "../shared/jev";
 import type { JevCallTrace } from "../shared/debug";
 import type { KeyStatus } from "../shared/types";
 import { logEvent, recordJevCall } from "./debugLog";
@@ -131,65 +130,60 @@ export async function chatCompletion(messages: ChatMessage[], model: string, pur
  * POST /api/v1/systemone. Body: { model, state, questions }.
  * Returns TypeSafe's { model, answers, usage } plus OpenRouter's id/provider/usage.cost.
  */
+/** Bodies are kept in full up to this size so a dump shows exactly what crossed the wire. */
+const MAX_BODY_CHARS = 262_144;
+
+function clip(text: string): { text: string; truncated: boolean } {
+  return text.length > MAX_BODY_CHARS ? { text: text.slice(0, MAX_BODY_CHARS), truncated: true } : { text, truncated: false };
+}
+
+/**
+ * POST /api/v1/systemone. Body: { model, state, questions }.
+ * The exact request and response bodies are recorded for the debug dump.
+ */
 export async function systemOne(request: JevRequest, purpose = "judge"): Promise<JevResponse> {
   const ep = await systemOneEndpoint();
   const model = ep.stripModelPrefix && request.model.startsWith(ep.stripModelPrefix) ? request.model.slice(ep.stripModelPrefix.length) : request.model;
-  const body = JSON.stringify({ ...request, model });
-  const questionIds = Object.keys(request.questions);
-  const sampleId = questionIds[0];
+  const requestBody = JSON.stringify({ ...request, model });
+  const endpoint = `${ep.baseUrl}/v1/systemone`;
+  const req = clip(requestBody);
   const trace: JevCallTrace = {
     purpose,
     pageUrl: request.state.page.url,
     at: new Date().toISOString(),
     durationMs: 0,
-    requestModel: model,
-    candidates: request.state.candidates.length,
-    questions: questionIds.length,
-    stateChars: JSON.stringify(request.state).length,
+    endpoint,
     ok: false,
-    answersReturned: 0,
-    answersUnmatched: 0,
-    answersUnparsed: 0,
-    sampleQuestion: sampleId ? { id: sampleId, ...request.questions[sampleId] } : undefined,
+    requestBody: req.text,
+    requestTruncated: req.truncated,
+    responseBody: "",
+    responseTruncated: false,
   };
   const started = Date.now();
   try {
-    const res = await fetchWithRetry(`${ep.baseUrl}/v1/systemone`, {
+    const res = await fetchWithRetry(endpoint, {
       method: "POST",
       headers: { Authorization: `Bearer ${ep.key}`, "Content-Type": "application/json", ...APP_HEADERS },
-      body,
+      body: requestBody,
     });
     const text = await res.text();
+    const resp = clip(text);
     trace.durationMs = Date.now() - started;
     trace.httpStatus = res.status;
-    if (!res.ok) {
-      trace.errorSnippet = text.slice(0, 2000);
-      recordJevCall(trace);
-      throw new ApiError(`System One request failed: HTTP ${res.status}`, res.status, text);
-    }
-    const json = JSON.parse(text) as JevResponse;
-    const answers = json.answers ?? {};
-    const keys = Object.keys(answers);
-    trace.ok = true;
-    trace.responseModel = json.model;
-    trace.provider = json.provider;
-    trace.answersReturned = keys.length;
-    trace.answersUnmatched = keys.filter((k) => !request.questions[k]).length;
-    trace.answersUnparsed = keys.filter((k) => request.questions[k] && normalizeAnswer(answers[k], request.questions[k]) === null).length;
-    trace.cost = json.usage?.cost;
-    trace.tokens = json.usage?.total_tokens ?? json.usage?.input_tokens;
-    if (sampleId && sampleId in answers) trace.sampleRawAnswer = answers[sampleId];
-    else if (keys.length) trace.sampleRawAnswer = { [keys[0]]: answers[keys[0]] };
-    trace.rawResponseSnippet = text.slice(0, 2000);
+    trace.ok = res.ok;
+    trace.responseBody = resp.text;
+    trace.responseTruncated = resp.truncated;
     recordJevCall(trace);
-    const tokens = trace.tokens;
+    if (!res.ok) throw new ApiError(`System One request failed: HTTP ${res.status}`, res.status, text);
+    const json = JSON.parse(text) as JevResponse;
+    const tokens = json.usage?.total_tokens ?? json.usage?.input_tokens;
     await recordSpend(purpose, json.usage?.cost, tokens);
-    logEvent("info", `jev/${purpose}`, `${keys.length} answers for ${questionIds.length} questions`, { id: json.id, model: json.model, provider: json.provider, cost: json.usage?.cost, tokens, unparsed: trace.answersUnparsed });
+    logEvent("info", `jev/${purpose}`, `HTTP ${res.status}, ${Object.keys(json.answers ?? {}).length} answers for ${Object.keys(request.questions).length} questions`, { id: json.id, model: json.model, provider: json.provider, cost: json.usage?.cost, tokens });
     return json;
   } catch (err) {
     if (!trace.durationMs) trace.durationMs = Date.now() - started;
-    if (!trace.httpStatus && !trace.errorSnippet) {
-      trace.errorSnippet = (err as Error).message;
+    if (trace.httpStatus === undefined) {
+      trace.transportError = (err as Error).message;
       recordJevCall(trace);
     }
     logEvent("error", `jev/${purpose}`, (err as Error).message);

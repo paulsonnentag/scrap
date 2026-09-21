@@ -70,24 +70,20 @@ Nothing is scanned until step 3 is done. The **Settings** tab shows a running sp
 - Banking, healthcare, mail, and authentication URLs are skipped by heuristic, as are pages the service worker observes being served with `Cache-Control: no-store` (this needs host permission for the site). An explicit per-site **Always** override bypasses the host heuristic for that origin.
 - Data lives in IndexedDB. The **Data** tab exports JSON/CSV and has **Clear site** / **Clear all**.
 
-## Debugging a page that produced nothing
+## Dumping raw diagnostics
 
-Every scan records a trace, so the extension can explain itself instead of failing silently.
+When a page produces nothing, the extension can hand over everything it saw, verbatim. Nothing is summarized or interpreted.
 
-Open the side panel and press **Diagnose** on the **This page** tab (or **Explain why** in the empty-state card, or **Generate report** under *Diagnostics* in **Settings**). You get a ranked verdict in the panel and a single markdown report you can copy or download:
+Press **Dump** on the **This page** tab (or **Dump raw data** under *Raw dump* in **Settings**), then **Copy dump**. You get one markdown document containing:
 
-- **Verdict** — ranked guesses at what stopped the pipeline, most specific first.
-- **Setup** — key present and verified, onboarding state, Jev endpoint, granted host permissions.
-- **Profiles considered** — every profile with its patterns, whether the URL matched, the per-site override, the page-gate probability, and a plain-language reason it did or did not run.
-- **Extraction** — per-source counts: produced, skipped as hidden or inside nav/footer, skipped as too short, deduped, kept.
-- **Jev calls** — one section per request with the model that answered, question and answer counts, cost, **the exact question sent and the raw answer received**, and the error body when a call failed.
-- **Candidates and decisions** — each candidate with its accept probability and whether it was accepted, sent to review, or discarded.
-- **Resolvers**, **storage**, **errors**, and a timestamped event log.
-- **Page source** — the HTML as the extractors saw it. Inline script and style bodies are replaced with placeholders (JSON-LD is kept verbatim, since the structured-data extractor reads it), which keeps the report small and reduces the chance of pasting a token. Tick *Keep script and style bodies* for the unfiltered version.
+- **Scan trace** as JSON: the setup state, every profile with whether its patterns matched and its per-site override, the page-gate probability, per-source extractor counts, every candidate with its text, source, DOM path and hints, and for each candidate the normalized answers, accept probability and resulting status.
+- **Jev calls**: for each System One request, the **exact JSON body POSTed** and the **exact body received**, with the HTTP status and duration. This is the ground truth for anything involving answers, probabilities or response shape.
+- **Profiles** as stored, in full, so question wording, criteria and thresholds are visible.
+- **Event log** and **page source** as the extractors saw it.
 
-Anything matching an API-key pattern is stripped before the report is rendered. The report still contains the page's URL and visible content, so read it before sharing.
+Downloads are available as `.md` or as raw `.json`. Inline script and style bodies in the page source are replaced with placeholders by default, while JSON-LD is kept verbatim since the structured-data extractor reads it; tick *Keep script and style bodies* for the unfiltered version.
 
-The report is designed to answer the common failures on its own: no profile matched the URL, a per-site **Never** override, a page gate that rejected the page, extractors finding nothing because the content is rendered late, every candidate scoring below the review threshold, an auth or rate-limit error from OpenRouter, a stale content script in a tab that was not reloaded, and a System One response shape that differs from what this build expects. That last one is why the raw answer is included verbatim.
+Request and response bodies are kept up to 256 KB each for the last 12 calls, and truncation is marked inline. Anything matching an API-key pattern is stripped, but the dump contains the page's URL and content, so read it before sharing.
 
 ## Assumptions to verify before shipping
 
